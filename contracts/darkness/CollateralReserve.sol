@@ -47,7 +47,7 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
     function initialize(address _treasury, address _dark, address _share, address[] memory _collaterals, address _router) external initializer {
         OwnableUpgradeSafe.__Ownable_init();
 
-        require(_treasury != address(0), "Invalid address");
+        require(_treasury != address(0), "zero");
         require(_collaterals.length == 3, "Invalid collateral length");
         treasury = _treasury;
         dark = _dark; // DARK
@@ -71,7 +71,7 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
     /* ========== RESTRICTED FUNCTIONS ========== */
 
     function transferTo(address _token, address _receiver, uint256 _amount) external override onlyTreasury {
-        require(_receiver != address(0), "Invalid address");
+        require(_receiver != address(0), "zero");
         require(_amount > 0, "Cannot transfer zero amount");
         IERC20(_token).safeTransfer(_receiver, _amount);
         emit TransferTo(_token, _receiver, _amount);
@@ -116,13 +116,13 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
     }
 
     function setTreasury(address _treasury) public onlyOwner {
-        require(_treasury != address(0), "Invalid address");
+        require(_treasury != address(0), "zero");
         treasury = _treasury;
         emit TreasuryUpdated(treasury);
     }
 
     function setRouter(address _router) public onlyOwner {
-        require(_router != address(0), "Invalid address");
+        require(_router != address(0), "zero");
         router = _router;
     }
 

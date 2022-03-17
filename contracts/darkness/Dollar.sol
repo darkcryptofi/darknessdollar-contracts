@@ -36,7 +36,7 @@ contract Dollar is IDollar, ERC20Burnable, Ownable, ReentrancyGuard {
     }
 
     function setTreasuryAddress(address _treasury) public onlyOwner {
-        require(_treasury != address(0), "Invalid address");
+        require(_treasury != address(0), "zero");
         treasury = _treasury;
         emit TreasuryUpdated(_treasury);
     }

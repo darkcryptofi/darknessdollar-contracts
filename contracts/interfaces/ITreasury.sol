@@ -31,6 +31,8 @@ interface ITreasury {
 
     function globalShareValue() external view returns (uint256);
 
+    function getEffectiveCollateralRatio() external view returns (uint256);
+
     function requestTransfer(address token, address receiver, uint256 amount) external;
 
     function requestBurnShare(uint256 _fee) external;

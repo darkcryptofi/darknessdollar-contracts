@@ -15,8 +15,6 @@ import "../interfaces/IPool.sol";
 import "../interfaces/ITreasuryPolicy.sol";
 import "../interfaces/ICollateralReserve.sol";
 
-import "hardhat/console.sol";
-
 contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -79,9 +77,9 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
         address _profitSharingFund,
         address _darkInsuranceFund
     ) external initializer {
-        require(_dollar != address(0), "invalidAddress");
-        require(_dark != address(0), "invalidAddress");
-        require(_share != address(0), "invalidAddress");
+        require(_dollar != address(0), "zero");
+        require(_dark != address(0), "zero");
+        require(_share != address(0), "zero");
         require(_collaterals.length == 3, "Invalid collateral length");
 
         OwnableUpgradeSafe.__Ownable_init();
@@ -176,10 +174,6 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
     }
 
     function globalCollateralBalance(uint256 _index) public view override returns (uint256) {
-//        console.log("_index = ", _index);
-//        console.log("collaterals[_index] = ", collaterals[_index]);
-//        console.log("balance = ", IERC20(collaterals[_index]).balanceOf(collateralReserve_));
-//        console.log("totalUnclaimedCollateral(_index) = ", totalUnclaimedCollateral(_index));
         return IERC20(collaterals[_index]).balanceOf(collateralReserve_).sub(totalUnclaimedCollateral(_index));
     }
 
@@ -238,21 +232,10 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
         }
     }
 
-    function updateProtocol() external onlyStrategist {
-        if (dollarPrice() > PRICE_PRECISION) {
-            ITreasuryPolicy(treasuryPolicy).setMintingFee(20);
-            ITreasuryPolicy(treasuryPolicy).setRedemptionFee(80);
-        } else {
-            ITreasuryPolicy(treasuryPolicy).setMintingFee(40);
-            ITreasuryPolicy(treasuryPolicy).setRedemptionFee(40);
-        }
-        for (uint256 i = 0; i < pools_array.length; i++) {
-            address _pool = pools_array[i];
-            if (_pool != address(0)) {
-                IPool(_pool).updateTargetCollateralRatio();
-                IPool(_pool).updateTargetDarkOverShareRatio();
-            }
-        }
+    function getEffectiveCollateralRatio() external view override returns (uint256) {
+        uint256 _total_collateral_value = globalCollateralTotalValue();
+        uint256 _total_dollar_value = IERC20(dollar).totalSupply().mul(dollarPrice()).div(PRICE_PRECISION);
+        return _total_collateral_value.mul(10000).div(_total_dollar_value);
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */
@@ -312,17 +295,22 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
     }
 
     function setTreasuryPolicy(address _treasuryPolicy) public onlyOwner {
-        require(_treasuryPolicy != address(0), "invalidAddress");
+        require(_treasuryPolicy != address(0), "zero");
         treasuryPolicy = _treasuryPolicy;
     }
 
     function setOracleDollar(address _oracleDollar) external onlyOwner {
-        require(_oracleDollar != address(0), "invalidAddress");
+        require(_oracleDollar != address(0), "zero");
         oracleDollar = _oracleDollar;
     }
 
+    function setOracleDark(address _oracleDark) external onlyOwner {
+        require(_oracleDark != address(0), "zero");
+        oracleDark = _oracleDark;
+    }
+
     function setOracleShare(address _oracleShare) external onlyOwner {
-        require(_oracleShare != address(0), "invalidAddress");
+        require(_oracleShare != address(0), "zero");
         oracleShare = _oracleShare;
     }
 
@@ -335,23 +323,48 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
     }
 
     function setOracleCollateral(uint256 _index, address _oracleCollateral) external onlyOwner {
-        require(_oracleCollateral != address(0), "invalidAddress");
+        require(_oracleCollateral != address(0), "zero");
         oracleCollaterals[_index] = _oracleCollateral;
     }
 
     function setCollateralReserve(address _collateralReserve) public onlyOwner {
-        require(_collateralReserve != address(0), "invalidAddress");
+        require(_collateralReserve != address(0), "zero");
         collateralReserve_ = _collateralReserve;
     }
 
     function setProfitSharingFund(address _profitSharingFund) public onlyOwner {
-        require(_profitSharingFund != address(0), "invalidAddress");
+        require(_profitSharingFund != address(0), "zero");
         profitSharingFund_ = _profitSharingFund;
     }
 
     function setDarkInsuranceFund(address _darkInsuranceFund) public onlyOwner {
-        require(_darkInsuranceFund != address(0), "invalidAddress");
+        require(_darkInsuranceFund != address(0), "zero");
         darkInsuranceFund_ = _darkInsuranceFund;
+    }
+
+    function updateProtocol() external onlyStrategist {
+        if (dollarPrice() > PRICE_PRECISION) {
+            ITreasuryPolicy(treasuryPolicy).setMintingFee(20);
+            ITreasuryPolicy(treasuryPolicy).setRedemptionFee(80);
+        } else {
+            ITreasuryPolicy(treasuryPolicy).setMintingFee(40);
+            ITreasuryPolicy(treasuryPolicy).setRedemptionFee(40);
+        }
+        for (uint256 i = 0; i < pools_array.length; i++) {
+            address _pool = pools_array[i];
+            if (_pool != address(0)) {
+                IPool(_pool).updateTargetCollateralRatio();
+                IPool(_pool).updateTargetDarkOverShareRatio();
+            }
+        }
+        address _oracle = oracleCollaterals[1];
+        if (_oracle != address(0)) IOracle(_oracle).update();
+        _oracle = oracleCollaterals[2];
+        if (_oracle != address(0)) IOracle(_oracle).update();
+        _oracle = oracleShare;
+        if (_oracle != address(0)) IOracle(_oracle).update();
+        _oracle = oracleDollar;
+        if (_oracle != address(0)) IOracle(_oracle).update();
     }
 
     /* ========== EMERGENCY ========== */

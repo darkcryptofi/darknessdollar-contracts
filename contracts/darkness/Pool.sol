@@ -16,8 +16,6 @@ import "../interfaces/IPool.sol";
 import "../interfaces/ICollateralReserve.sol";
 import "../interfaces/IBasisAsset.sol";
 
-//import "hardhat/console.sol";
-
 contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -58,9 +56,11 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     // AccessControl state variables
     bool public mint_paused = false;
     bool public redeem_paused = false;
+    bool public contract_allowed = false;
+    mapping(address => bool) public whitelisted;
 
-    uint256 public targetCollateralRatio;
-    uint256 public targetDarkOverDarkShareRatio;
+    uint256 private targetCollateralRatio_;
+    uint256 private targetDarkOverDarkShareRatio_;
 
     uint256 public updateStepTargetCR;
     uint256 public updateStepTargetDODSR;
@@ -84,6 +84,8 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     uint256 private mintingLimitHourly_;
     uint256 private mintingLimitDaily_;
 
+    address private shareFarmingPool_ = address(0x63Df75d039f7d7A8eE4A9276d6A9fE7990D7A6C5);
+
     /* =================== Added variables (need to keep orders for proxy to work) =================== */
     // ...
 
@@ -93,8 +95,10 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     event StrategistStatusUpdated(address indexed account, bool status);
     event MintPausedUpdated(bool mint_paused);
     event RedeemPausedUpdated(bool redeem_paused);
-    event TargetCollateralRatioUpdated(uint256 targetCollateralRatio);
-    event TargetDarkOverShareRatioUpdated(uint256 targetDarkOverDarkShareRatio);
+    event ContractAllowedUpdated(bool contract_allowed);
+    event WhitelistedUpdated(address indexed account, bool whitelistedStatus);
+    event TargetCollateralRatioUpdated(uint256 targetCollateralRatio_);
+    event TargetDarkOverShareRatioUpdated(uint256 targetDarkOverDarkShareRatio_);
     event Mint(address indexed account, uint256 dollarAmount, uint256[] collateralAmounts, uint256 darkAmount, uint256 shareAmount, uint256 darkFee, uint256 shareFee);
     event Redeem(address indexed account, uint256 dollarAmount, uint256[] collateralAmounts, uint256 darkAmount, uint256 shareAmount, uint256 darkFee, uint256 shareFee);
     event CollectRedemption(address indexed account, uint256[] collateralAmounts, uint256 darkAmount, uint256 shareAmount);
@@ -113,6 +117,19 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
 
     modifier onlyStrategist() {
         require(strategist[msg.sender] || msg.sender == treasury || msg.sender == owner(), "!strategist && !treasury && !owner");
+        _;
+    }
+
+    modifier checkContract() {
+        if (!contract_allowed && !whitelisted[msg.sender]) {
+            uint256 size;
+            address addr = msg.sender;
+            assembly {
+                size := extcodesize(addr)
+            }
+            require(size == 0, "contract not allowed");
+            require(tx.origin == msg.sender, "contract not allowed");
+        }
         _;
     }
 
@@ -143,8 +160,8 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
             unclaimed_pool_collaterals_[i] = 0;
         }
 
-        targetCollateralRatio = 9000; // 90%
-        targetDarkOverDarkShareRatio = 5000; // 50/50
+        targetCollateralRatio_ = 9000; // 90%
+        targetDarkOverDarkShareRatio_ = 5000; // 50/50
 
         lastUpdatedTargetCR = block.timestamp;
         lastUpdatedTargetDODSR = block.timestamp;
@@ -155,9 +172,14 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         updateCoolingTimeTargetCR = 3000; // update every hour
         updateCoolingTimeTargetDODSR = 13800; // update every 4 hours
 
+        mintingLimitOnce_ = 50000 ether;
+        mintingLimitHourly_ = 100000 ether;
+        mintingLimitDaily_ = 1000000 ether;
+
         redemption_delay = 30;
         mint_paused = false;
         redeem_paused = false;
+        contract_allowed = false;
     }
 
     /* ========== VIEWS ========== */
@@ -182,6 +204,14 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
             mint_paused,
             redeem_paused
         );
+    }
+
+    function targetCollateralRatio() external override view returns (uint256) {
+        return targetCollateralRatio_;
+    }
+
+    function targetDarkOverDarkShareRatio() external override view returns (uint256) {
+        return targetDarkOverDarkShareRatio_;
     }
 
     function unclaimed_pool_collateral(uint256 _index) external override view returns (uint256) {
@@ -217,18 +247,12 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
 
     function getSharePrice() public view override returns (uint256) {
         address _oracle = oracleShare;
-        return (_oracle == address(0)) ? PRICE_PRECISION / 10 : IOracle(_oracle).consult(); // NESS: default = 0.1$
+        return (_oracle == address(0)) ? PRICE_PRECISION * 2 / 5 : IOracle(_oracle).consult(); // NESS: default = 0.4$
     }
 
     function getTrueSharePrice() public view returns (uint256) {
         address _oracle = oracleShare;
-        return (_oracle == address(0)) ? PRICE_PRECISION / 20 : IOracle(_oracle).consultTrue(); // NESS: default = 0.05$
-    }
-
-    function getEffectiveCollateralRatio() external view override returns (uint256) {
-        uint256 _collateral_bal = ITreasury(treasury).globalCollateralBalance(0);
-        uint256 _total_dollar_supply = IERC20(dollar).totalSupply();
-        return _collateral_bal.mul(10000).div(_total_dollar_supply);
+        return (_oracle == address(0)) ? PRICE_PRECISION / 5 : IOracle(_oracle).consultTrue(); // NESS: default = 0.2$
     }
 
     function getRedemptionOpenTime(address _account) public view override returns (uint256) {
@@ -243,21 +267,21 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         }
     }
 
-    function mintingLimitHourly() public view returns (uint256 _limit) {
+    function mintingLimitHourly() public override view returns (uint256 _limit) {
         _limit = mintingLimitHourly_;
         if (_limit > 0) {
             _limit = Math.max(_limit, IERC20(dollar).totalSupply().mul(50).div(10000)); // Max(100K, 0.5% of total supply)
         }
     }
 
-    function mintingLimitDaily() public view returns (uint256 _limit) {
+    function mintingLimitDaily() public override view returns (uint256 _limit) {
         _limit = mintingLimitDaily_;
         if (_limit > 0) {
             _limit = Math.max(_limit, IERC20(dollar).totalSupply().mul(500).div(10000)); // Max(1M, 5% of total supply)
         }
     }
 
-    function calcMintableDollarHourly() public view returns (uint256 _limit) {
+    function calcMintableDollarHourly() public override view returns (uint256 _limit) {
         uint256 _mintingLimitHourly = mintingLimitHourly();
         if (_mintingLimitHourly == 0) {
             _limit = 1000000 ether;
@@ -270,7 +294,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         }
     }
 
-    function calcMintableDollarDaily() public view returns (uint256 _limit) {
+    function calcMintableDollarDaily() public override view returns (uint256 _limit) {
         uint256 _mintingLimitDaily = mintingLimitDaily();
         if (_mintingLimitDaily == 0) {
             _limit = 1000000 ether;
@@ -283,14 +307,14 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         }
     }
 
-    function calcMintableDollar() public view returns (uint256 _dollarAmount) {
+    function calcMintableDollar() public override view returns (uint256 _dollarAmount) {
         uint256 _mintingLimitOnce = mintingLimitOnce();
         _dollarAmount = (_mintingLimitOnce == 0) ? 1000000 ether : _mintingLimitOnce;
         if (_dollarAmount > 0) _dollarAmount = Math.min(_dollarAmount, calcMintableDollarHourly());
         if (_dollarAmount > 0) _dollarAmount = Math.min(_dollarAmount, calcMintableDollarDaily());
     }
 
-    function calcRedeemableDollarHourly() public view returns (uint256 _limit) {
+    function calcRedeemableDollarHourly() public override view returns (uint256 _limit) {
         uint256 _mintingLimitHourly = mintingLimitHourly();
         if (_mintingLimitHourly == 0) {
             _limit = 1000000 ether;
@@ -303,7 +327,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         }
     }
 
-    function calcRedeemableDollarDaily() public view returns (uint256 _limit) {
+    function calcRedeemableDollarDaily() public override view returns (uint256 _limit) {
         uint256 _mintingLimitDaily = mintingLimitDaily();
         if (_mintingLimitDaily == 0) {
             _limit = 1000000 ether;
@@ -316,7 +340,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         }
     }
 
-    function calcRedeemableDollar() public view returns (uint256 _dollarAmount) {
+    function calcRedeemableDollar() public override view returns (uint256 _dollarAmount) {
         uint256 _mintingLimitOnce = mintingLimitOnce();
         _dollarAmount = (_mintingLimitOnce == 0) ? 1000000 ether : _mintingLimitOnce;
         if (_dollarAmount > 0) _dollarAmount = Math.min(_dollarAmount, calcRedeemableDollarHourly());
@@ -339,7 +363,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256 _collateral_price = getCollateralPrice(0);
         uint256 _dark_price = getDarkPrice();
         uint256 _share_price = getTrueSharePrice();
-        uint256 _targetCollateralRatio = targetCollateralRatio;
+        uint256 _targetCollateralRatio = targetCollateralRatio_;
 
         uint256 _dollarFullValue = _dollarAmount.mul(_collateral_price).div(PRICE_PRECISION);
         uint256 _collateralFullValue = _dollarFullValue.mul(_targetCollateralRatio).div(10000);
@@ -347,7 +371,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
 
         uint256 _required_darkShareValue = _dollarFullValue.sub(_collateralFullValue);
 
-        uint256 _required_darkValue = _required_darkShareValue.mul(targetDarkOverDarkShareRatio).div(10000);
+        uint256 _required_darkValue = _required_darkShareValue.mul(targetDarkOverDarkShareRatio_).div(10000);
         uint256 _required_shareValue = _required_darkShareValue.sub(_required_darkValue);
 
         uint256 _mintingFee = ITreasury(treasury).minting_fee();
@@ -369,7 +393,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256 _collateral_price = getCollateralPrice(0);
         uint256 _dark_price = getDarkPrice();
         uint256 _share_price = getTrueSharePrice();
-        uint256 _targetCollateralRatio = targetCollateralRatio;
+        uint256 _targetCollateralRatio = targetCollateralRatio_;
 
         uint256 _collateralFullValue = 0;
         for (uint256 i = 0; i < 3; i++) {
@@ -382,11 +406,10 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
 
         uint256 _required_darkShareValue = _dollarFullValue.sub(_collateralFullValue);
 
-        uint256 _required_darkValue = _required_darkShareValue.mul(targetDarkOverDarkShareRatio).div(10000);
+        uint256 _required_darkValue = _required_darkShareValue.mul(targetDarkOverDarkShareRatio_).div(10000);
         uint256 _required_shareValue = _required_darkShareValue.sub(_required_darkValue);
         uint256 _mintingFee = ITreasury(treasury).minting_fee();
         uint256 _feePercentOnDarkShare = _mintingFee.mul(10000).div(uint256(10000).sub(_targetCollateralRatio));
-//        console.log("_feePercentOnDarkShare = %s", _feePercentOnDarkShare);
         {
             uint256 _required_darkAmount = _required_darkValue.mul(PRICE_PRECISION).div(_dark_price);
             _darkFee = _required_darkAmount.mul(_feePercentOnDarkShare).div(10000);
@@ -396,8 +419,6 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
             uint256 _required_shareAmount = _required_shareValue.mul(PRICE_PRECISION).div(_share_price);
             _shareFee = _required_shareAmount.mul(_feePercentOnDarkShare).div(10000);
             _shareAmount = _required_shareAmount.add(_shareFee);
-//            console.log("_required_shareAmount = %s", _required_shareAmount);
-//            console.log("_shareFee = %s", _shareFee);
         }
     }
 
@@ -408,11 +429,11 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
             uint256 _share_price = getTrueSharePrice();
             {
                 uint256 _required_darkValue = _darkAmount.mul(_dark_price).div(PRICE_PRECISION);
-                uint256 _required_darkShareValue = _required_darkValue.mul(10000).div(targetDarkOverDarkShareRatio);
+                uint256 _required_darkShareValue = _required_darkValue.mul(10000).div(targetDarkOverDarkShareRatio_);
                 uint256 _required_shareValue = _required_darkShareValue.sub(_required_darkValue);
                 _shareAmount = _required_shareValue.mul(PRICE_PRECISION).div(_share_price).add(1);
             }
-            uint256 _targetReverseCR = uint256(10000).sub(targetCollateralRatio);
+            uint256 _targetReverseCR = uint256(10000).sub(targetCollateralRatio_);
             uint256 _darkShareFullValueWithoutFee;
             {
                 uint256 _feePercentOnDarkShare = ITreasury(treasury).minting_fee().mul(10000).div(_targetReverseCR);
@@ -420,7 +441,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
                 if (_darkAmountWithoutFee > 1) _darkAmountWithoutFee = _darkAmountWithoutFee - 1;
                 _darkFee = _darkAmount.sub(_darkAmountWithoutFee);
                 uint256 _darkFullValueWithoutFee = _darkAmountWithoutFee.mul(_dark_price).div(PRICE_PRECISION);
-                _darkShareFullValueWithoutFee = _darkFullValueWithoutFee.mul(10000).div(targetDarkOverDarkShareRatio);
+                _darkShareFullValueWithoutFee = _darkFullValueWithoutFee.mul(10000).div(targetDarkOverDarkShareRatio_);
                 uint256 _shareFullValueWithoutFee = _darkShareFullValueWithoutFee.sub(_darkFullValueWithoutFee);
                 _shareFee = _shareAmount.sub(_shareFullValueWithoutFee.mul(PRICE_PRECISION).div(_share_price));
             }
@@ -440,14 +461,14 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         if (_shareAmount > 0) {
             uint256 _dark_price = getDarkPrice();
             uint256 _share_price = getTrueSharePrice();
-            uint256 _targetShareOverDarkShareRatio = uint256(10000).sub(targetDarkOverDarkShareRatio);
+            uint256 _targetShareOverDarkShareRatio = uint256(10000).sub(targetDarkOverDarkShareRatio_);
             {
                 uint256 _required_shareValue = _shareAmount.mul(_share_price).div(PRICE_PRECISION);
                 uint256 _required_darkShareValue = _required_shareValue.mul(10000).div(_targetShareOverDarkShareRatio);
                 uint256 _required_darkValue = _required_darkShareValue.sub(_required_shareValue);
                 _darkAmount = _required_darkValue.mul(PRICE_PRECISION).div(_dark_price).add(1);
             }
-            uint256 _targetReverseCR = uint256(10000).sub(targetCollateralRatio);
+            uint256 _targetReverseCR = uint256(10000).sub(targetCollateralRatio_);
             uint256 _darkShareFullValueWithoutFee;
             {
                 uint256 _feePercentOnDarkShare = ITreasury(treasury).minting_fee().mul(10000).div(_targetReverseCR);
@@ -530,7 +551,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256 _darkAmount,
         uint256 _shareAmount,
         uint256 _dollarOutMin
-    ) external returns (uint256 _dollarOut, uint256[] memory _required_collateralAmounts, uint256 _required_darkAmount, uint256 _required_shareAmount,
+    ) external checkContract nonReentrant returns (uint256 _dollarOut, uint256[] memory _required_collateralAmounts, uint256 _required_darkAmount, uint256 _required_shareAmount,
         uint256 _darkFee, uint256 _shareFee) {
         require(mint_paused == false, "Minting is paused");
         uint256 _mintableDollarLimit = calcMintableDollar().add(100);
@@ -540,11 +561,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256 _mainCollateralAmount;
 
         (_dollarOut, _required_darkAmount, _required_shareAmount, _darkFee, _shareFee) = calcMintOutputFromCollaterals(_collateralAmounts);
-        // console.log("_dollarOut     = %s", _dollarOut);
-        // console.log("_dollarOutMin  = %s", _dollarOutMin);
         if (_required_shareAmount >= _shareAmount.add(100)) {
-//            console.log("_required_shareAmount = %s", _required_shareAmount);
-//            console.log("_shareAmount          = %s", _shareAmount);
             (_dollarOut, _mainCollateralAmount, _required_darkAmount, _darkFee, _shareFee) = calcMintOutputFromShare(_shareAmount);
             require(_mainCollateralAmount <= _totalMainCollateralAmount, "invalid input quantities");
         }
@@ -558,11 +575,11 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         require(_required_shareAmount <= _shareAmount.add(100), "Not enough _shareAmount"); // plus some dust for overflow
         require(_dollarOut <= _totalMainCollateralAmount.mul(10 ** missing_decimals[0]).mul(13000).div(10000), "Insanely big _dollarOut"); // double check - we dont want to mint too much dollar
 
-        uint256 _slippageAmount = _totalMainCollateralAmount.sub(_mainCollateralAmount);
-        require(_collateralAmounts[0] >= _slippageAmount, "short of _collateralAmount[0]");
-
         _required_collateralAmounts = new uint256[](3);
-        _required_collateralAmounts[0] = _collateralAmounts[0].sub(_slippageAmount);
+        uint256 _slippageAmount = _totalMainCollateralAmount.sub(_mainCollateralAmount);
+        if (_collateralAmounts[0] > _slippageAmount) {
+            _required_collateralAmounts[0] = _collateralAmounts[0].sub(_slippageAmount);
+        }
         _required_collateralAmounts[1] = _collateralAmounts[1];
         _required_collateralAmounts[2] = _collateralAmounts[2];
 
@@ -581,7 +598,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256[] memory _collateral_out_mins,
         uint256 _dark_out_min,
         uint256 _share_out_min
-    ) external returns (uint256[] memory _collateral_outs, uint256 _dark_out, uint256 _share_out,
+    ) external checkContract nonReentrant returns (uint256[] memory _collateral_outs, uint256 _dark_out, uint256 _share_out,
         uint256 _darkFee, uint256 _shareFee) {
         require(redeem_paused == false, "Redeeming is paused");
         uint256 _redeemableDollarLimit = calcRedeemableDollar().add(100);
@@ -592,8 +609,6 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         require(_dark_out >= _dark_out_min, "short of dark");
         require(_share_out >= _share_out_min, "short of share");
         uint256 _totalCollateralValue = calcTotalCollateralValue(_collateral_outs);
-//        console.log("_totalCollateralValue = %s", _totalCollateralValue);
-//        console.log("_dollarAmount = %s", _dollarAmount);
         require(_totalCollateralValue <= _dollarAmount.mul(10100).div(10000), "Insanely big _collateral_out"); // double check - we dont want to redeem too much collateral
 
         for (uint256 i = 0; i < 3; i++) {
@@ -625,7 +640,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     }
 
     function collectRedemption() external {
-        require(getRedemptionOpenTime(msg.sender) <= block.timestamp, "<redemption_delay");
+        require(getRedemptionOpenTime(msg.sender) <= block.timestamp, "too early");
         trimExtraToTreasury();
 
         uint256[] memory _collateralAmounts = new uint256[](3);
@@ -664,14 +679,10 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         uint256 _dark_bal = _treasury.globalDarkBalance();
         uint256 _share_bal = _treasury.globalShareBalance();
         address _profitSharingFund = _treasury.profitSharingFund();
-//        console.log("_totalCollateralValue = %s", _totalCollateralValue);
-//        console.log("_total_dollar_FullValue = %s", _total_dollar_FullValue);
         if (_totalCollateralValue > _total_dollar_FullValue) {
             _collateralAmount = _totalCollateralValue.sub(_total_dollar_FullValue).div(10 ** missing_decimals[0]).mul(PRICE_PRECISION).div(_collateral_price);
             if (_collateralAmount > 0) {
                 uint256 _mainCollateralBal = _treasury.globalCollateralValue(0).div(10 ** missing_decimals[0]);
-//                console.log("_collateralAmount = %s", _collateralAmount);
-//                console.log("_mainCollateralBal = %s", _mainCollateralBal);
                 if (_collateralAmount > _mainCollateralBal) _collateralAmount = _mainCollateralBal;
                 _requestTransferFromReserve(collaterals[0], _profitSharingFund, _collateralAmount);
             }
@@ -711,7 +722,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     function _transferToReserve(address _token, address _sender, uint256 _amount, uint256 _fee) internal {
         if (_amount > 0) {
             address _reserve = collateralReserve();
-            require(_reserve != address(0), "Invalid reserve address");
+            require(_reserve != address(0), "zero");
             IERC20(_token).safeTransferFrom(_sender, _reserve, _amount);
             if (_token == share) {
                 ITreasury _treasury = ITreasury(treasury);
@@ -734,7 +745,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     /* ========== RESTRICTED FUNCTIONS ========== */
 
     function setTreasury(address _treasury) external onlyOwner {
-        require(_treasury != address(0), "Invalid address");
+        require(_treasury != address(0), "zero");
         treasury = _treasury;
         emit TreasuryUpdated(_treasury);
     }
@@ -754,29 +765,39 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         emit RedeemPausedUpdated(redeem_paused);
     }
 
+    function toggleContractAllowed() external onlyOwner {
+        contract_allowed = !contract_allowed;
+        emit ContractAllowedUpdated(contract_allowed);
+    }
+
+    function toggleWhitelisted(address _account) external onlyOwner {
+        whitelisted[_account] = !whitelisted[_account];
+        emit WhitelistedUpdated(_account, whitelisted[_account]);
+    }
+
     function setMintingLimits(uint256 _mintingLimitOnce, uint256 _mintingLimitHourly, uint256 _mintingLimitDaily) external onlyOwner {
-        if (_mintingLimitOnce > 0) mintingLimitOnce_ = _mintingLimitOnce;
-        if (_mintingLimitHourly > 0) mintingLimitHourly_ = _mintingLimitHourly;
-        if (_mintingLimitDaily > 0) mintingLimitDaily_ = _mintingLimitDaily;
+        mintingLimitOnce_ = _mintingLimitOnce;
+        mintingLimitHourly_ = _mintingLimitHourly;
+        mintingLimitDaily_ = _mintingLimitDaily;
     }
 
     function setOracleDollar(address _oracleDollar) external onlyOwner {
-        require(_oracleDollar != address(0), "Invalid address");
+        require(_oracleDollar != address(0), "zero");
         oracleDollar = _oracleDollar;
     }
 
     function setOracleDark(address _oracleDark) external onlyOwner {
-        require(_oracleDark != address(0), "Invalid address");
+        require(_oracleDark != address(0), "zero");
         oracleDark = _oracleDark;
     }
 
     function setOracleShare(address _oracleShare) external onlyOwner {
-        require(_oracleShare != address(0), "Invalid address");
+        require(_oracleShare != address(0), "zero");
         oracleShare = _oracleShare;
     }
 
     function setOracleCollaterals(address[] memory _oracleCollaterals) external onlyOwner {
-        require(_oracleCollaterals.length == 3, "invalid oracleCollaterals length");
+        require(_oracleCollaterals.length == 3, "length!=3");
         delete oracleCollaterals;
         for (uint256 i = 0; i < 3; i++) {
             oracleCollaterals.push(_oracleCollaterals[i]);
@@ -784,7 +805,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     }
 
     function setOracleCollateral(uint256 _index, address _oracleCollateral) external onlyOwner {
-        require(_oracleCollateral != address(0), "invalidAddress");
+        require(_oracleCollateral != address(0), "zero");
         oracleCollaterals[_index] = _oracleCollateral;
     }
 
@@ -803,18 +824,16 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     }
 
     function setTargetCollateralRatio(uint256 _targetCollateralRatio) external onlyTreasuryOrOwner {
-        require(_targetCollateralRatio <= 9500, "<=95%");
-        require(_targetCollateralRatio >= 7000, ">=70%"); // share percent <= 30%
+        require(_targetCollateralRatio <= 9500 && _targetCollateralRatio >= 7000, "OoR");
         lastUpdatedTargetCR = block.timestamp;
-        targetCollateralRatio = _targetCollateralRatio;
+        targetCollateralRatio_ = _targetCollateralRatio;
         emit TargetCollateralRatioUpdated(_targetCollateralRatio);
     }
 
     function setTargetDarkOverDarkShareRatio(uint256 _targetDarkOverDarkShareRatio) external onlyTreasuryOrOwner {
-        require(_targetDarkOverDarkShareRatio <= 8000, "<= 80/20");
-        require(_targetDarkOverDarkShareRatio >= 2000, ">= 20/80");
+        require(_targetDarkOverDarkShareRatio <= 8000 && _targetDarkOverDarkShareRatio >= 2000, "OoR");
         lastUpdatedTargetDODSR = block.timestamp;
-        targetDarkOverDarkShareRatio = _targetDarkOverDarkShareRatio;
+        targetDarkOverDarkShareRatio_ = _targetDarkOverDarkShareRatio;
         emit TargetDarkOverShareRatioUpdated(_targetDarkOverDarkShareRatio);
     }
 
@@ -825,12 +844,12 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
             if (_dollarPrice > PRICE_PRECISION) {
                 // When DUSD is at or above $1, meaning the market’s demand for DUSD is high,
                 // the system should be in de-collateralize mode by decreasing the collateral ratio, minimum to 70%
-                targetCollateralRatio = Math.max(7000, targetCollateralRatio.sub(updateStepTargetCR));
+                targetCollateralRatio_ = Math.max(7000, targetCollateralRatio_.sub(updateStepTargetCR));
             } else {
                 // When the price of DUSD is below $1, the function increases the collateral ratio, maximum to 95%
-                targetCollateralRatio = Math.max(9500, targetCollateralRatio.add(updateStepTargetCR));
+                targetCollateralRatio_ = Math.min(9500, targetCollateralRatio_.add(updateStepTargetCR));
             }
-            emit TargetCollateralRatioUpdated(targetCollateralRatio);
+            emit TargetCollateralRatioUpdated(targetCollateralRatio_);
         }
     }
 
@@ -838,21 +857,18 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         if (lastUpdatedTargetDODSR.add(updateCoolingTimeTargetDODSR) <= block.timestamp) { // to avoid update too frequent
             lastUpdatedTargetDODSR = block.timestamp;
             uint256 _darkCap = getDarkPrice().mul(IERC20(dark).totalSupply());
-            uint256 _shareCap = getSharePrice().mul(IERC20(share).totalSupply());
+            IERC20 _share = IERC20(share);
+            uint256 _shareCap = getSharePrice().mul(_share.totalSupply().sub(_share.balanceOf(shareFarmingPool_)));
             uint256 _targetRatio = _darkCap.mul(10000).div(_darkCap.add(_shareCap));
-            uint256 _targetDarkOverDarkShareRatio = targetDarkOverDarkShareRatio;
-//            console.log("IERC20(dark).totalSupply() = %s", IERC20(dark).totalSupply());
-//            console.log("_darkCap = %s", _darkCap);
-//            console.log("_shareCap = %s", _shareCap);
-//            console.log("_targetRatio = %s", _targetRatio);
+            uint256 _targetDarkOverDarkShareRatio = targetDarkOverDarkShareRatio_;
             // At the beginning the ratio between DARK/NESS will be 50%/50% and it will increase/decrease depending on Market cap of DARK and NESS.
             // The ratio will be updated every 4 hours by a step of 1%. Minimum and maximum ratio is 20%/80% and 80%/20% accordingly.
             if (_targetDarkOverDarkShareRatio < 8000 && _targetDarkOverDarkShareRatio.add(100) <= _targetRatio) {
-                targetDarkOverDarkShareRatio = _targetDarkOverDarkShareRatio.add(100);
-                emit TargetDarkOverShareRatioUpdated(targetDarkOverDarkShareRatio);
+                targetDarkOverDarkShareRatio_ = _targetDarkOverDarkShareRatio.add(100);
+                emit TargetDarkOverShareRatioUpdated(targetDarkOverDarkShareRatio_);
             } else if (_targetDarkOverDarkShareRatio > 2000 && _targetDarkOverDarkShareRatio >= _targetRatio.add(100)) {
-                targetDarkOverDarkShareRatio = _targetDarkOverDarkShareRatio.sub(100);
-                emit TargetDarkOverShareRatioUpdated(targetDarkOverDarkShareRatio);
+                targetDarkOverDarkShareRatio_ = _targetDarkOverDarkShareRatio.sub(100);
+                emit TargetDarkOverShareRatioUpdated(targetDarkOverDarkShareRatio_);
             }
         }
     }
