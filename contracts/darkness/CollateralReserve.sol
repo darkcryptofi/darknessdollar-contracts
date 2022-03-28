@@ -35,6 +35,10 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
     event TransferTo(address indexed token, address receiver, uint256 amount);
     event BurnToken(address indexed token, uint256 amount);
     event TreasuryUpdated(address indexed newTreasury);
+    event RouterUpdated(address _router);
+    event ShareSellingPercentUpdated(uint256 _shareSellingPercent);
+    event MaxShareAmountToSellUpdated(uint256 _maxShareAmountToSell);
+    event ShareToUsdcRouterPathUpdated(address[] _shareToUsdcRouterPath);
     event SwapToken(address inputToken, address outputToken, uint256 amount, uint256 amountReceived);
 
     /* ========== Modifiers =============== */
@@ -110,7 +114,7 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
         if (_amount == 0) return;
         IERC20(share).safeIncreaseAllowance(router, _amount);
         uint256 _before = IERC20(usdc).balanceOf(address(this));
-        IUniswapV2Router(router).swapExactTokensForTokens(_amount, 1, shareToUsdcRouterPath, address(this), block.timestamp.add(1800));
+        IUniswapV2Router(router).swapExactTokensForTokens(_amount, 1, shareToUsdcRouterPath, address(this), block.timestamp);
         uint256 _after = IERC20(usdc).balanceOf(address(this));
         emit SwapToken(share, usdc, _amount, _after.sub(_before));
     }
@@ -118,26 +122,30 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
     function setTreasury(address _treasury) public onlyOwner {
         require(_treasury != address(0), "zero");
         treasury = _treasury;
-        emit TreasuryUpdated(treasury);
+        emit TreasuryUpdated(_treasury);
     }
 
     function setRouter(address _router) public onlyOwner {
         require(_router != address(0), "zero");
         router = _router;
+        emit RouterUpdated(_router);
     }
 
     function setShareSellingPercent(uint256 _shareSellingPercent) public onlyOwner {
         require(_shareSellingPercent <= 10000, ">100%");
         shareSellingPercent = _shareSellingPercent;
+        emit ShareSellingPercentUpdated(_shareSellingPercent);
     }
 
     function setMaxShareAmountToSell(uint256 _maxShareAmountToSell) public onlyOwner {
         maxShareAmountToSell = _maxShareAmountToSell;
+        emit MaxShareAmountToSellUpdated(_maxShareAmountToSell);
     }
 
     function setShareToUsdcRouterPath(address[] memory _shareToUsdcRouterPath) public onlyOwner {
         delete shareToUsdcRouterPath;
         shareToUsdcRouterPath = _shareToUsdcRouterPath;
+        emit ShareToUsdcRouterPathUpdated(_shareToUsdcRouterPath);
     }
 
     /* ========== EMERGENCY ========== */
@@ -148,6 +156,6 @@ contract CollateralReserve is OwnableUpgradeSafe, ICollateralReserve {
         for (uint256 i = 0; i < 3; i++) {
             require(_token != collaterals[i], "collateral");
         }
-        IERC20(_token).transfer(owner(), IERC20(_token).balanceOf(address(this)));
+        IERC20(_token).safeTransfer(owner(), IERC20(_token).balanceOf(address(this)));
     }
 }

@@ -97,6 +97,15 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     event RedeemPausedUpdated(bool redeem_paused);
     event ContractAllowedUpdated(bool contract_allowed);
     event WhitelistedUpdated(address indexed account, bool whitelistedStatus);
+    event SetMintingLimits(uint256 _mintingLimitOnce, uint256 _mintingLimitHourly, uint256 _mintingLimitDaily);
+    event SetOracleDollar(address _oracleDollar);
+    event SetOracleDark(address _oracleDark);
+    event SetOracleShare(address _oracleShare);
+    event SetOracleCollaterals(address[] _oracleCollaterals);
+    event SetOracleCollateral(uint256 _index, address _oracleCollateral);
+    event SetRedemptionDelay(uint256 _redemption_delay);
+    event SetTargetCollateralRatioConfig(uint256 _updateStepTargetCR, uint256 _updateCoolingTimeTargetCR);
+    event SetTargetDarkOverShareRatioConfig(uint256 _updateStepTargetDODSR, uint256 _updateCoolingTimeTargetDODSR);
     event TargetCollateralRatioUpdated(uint256 targetCollateralRatio_);
     event TargetDarkOverShareRatioUpdated(uint256 targetDarkOverDarkShareRatio_);
     event Mint(address indexed account, uint256 dollarAmount, uint256[] collateralAmounts, uint256 darkAmount, uint256 shareAmount, uint256 darkFee, uint256 shareFee);
@@ -682,7 +691,7 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
         if (_totalCollateralValue > _total_dollar_FullValue) {
             _collateralAmount = _totalCollateralValue.sub(_total_dollar_FullValue).div(10 ** missing_decimals[0]).mul(PRICE_PRECISION).div(_collateral_price);
             if (_collateralAmount > 0) {
-                uint256 _mainCollateralBal = _treasury.globalCollateralValue(0).div(10 ** missing_decimals[0]);
+                uint256 _mainCollateralBal = _treasury.globalCollateralBalance(0);
                 if (_collateralAmount > _mainCollateralBal) _collateralAmount = _mainCollateralBal;
                 _requestTransferFromReserve(collaterals[0], _profitSharingFund, _collateralAmount);
             }
@@ -776,51 +785,60 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     }
 
     function setMintingLimits(uint256 _mintingLimitOnce, uint256 _mintingLimitHourly, uint256 _mintingLimitDaily) external onlyOwner {
-        mintingLimitOnce_ = _mintingLimitOnce;
-        mintingLimitHourly_ = _mintingLimitHourly;
-        mintingLimitDaily_ = _mintingLimitDaily;
+        if (_mintingLimitOnce > 0) mintingLimitOnce_ = _mintingLimitOnce;
+        if (_mintingLimitHourly > 0) mintingLimitHourly_ = _mintingLimitHourly;
+        if (_mintingLimitDaily > 0) mintingLimitDaily_ = _mintingLimitDaily;
+        emit SetMintingLimits(_mintingLimitOnce, _mintingLimitHourly, _mintingLimitDaily);
     }
 
     function setOracleDollar(address _oracleDollar) external onlyOwner {
-        require(_oracleDollar != address(0), "zero");
+        require(_oracleDollar != address(0), "Invalid address");
         oracleDollar = _oracleDollar;
+        emit SetOracleDollar(_oracleDollar);
     }
 
     function setOracleDark(address _oracleDark) external onlyOwner {
-        require(_oracleDark != address(0), "zero");
+        require(_oracleDark != address(0), "Invalid address");
         oracleDark = _oracleDark;
+        emit SetOracleDark(_oracleDark);
     }
 
     function setOracleShare(address _oracleShare) external onlyOwner {
-        require(_oracleShare != address(0), "zero");
+        require(_oracleShare != address(0), "Invalid address");
         oracleShare = _oracleShare;
+        emit SetOracleShare(_oracleShare);
     }
 
     function setOracleCollaterals(address[] memory _oracleCollaterals) external onlyOwner {
-        require(_oracleCollaterals.length == 3, "length!=3");
+        require(_oracleCollaterals.length == 3, "invalid oracleCollaterals length");
         delete oracleCollaterals;
         for (uint256 i = 0; i < 3; i++) {
             oracleCollaterals.push(_oracleCollaterals[i]);
         }
+        emit SetOracleCollaterals(_oracleCollaterals);
     }
 
     function setOracleCollateral(uint256 _index, address _oracleCollateral) external onlyOwner {
-        require(_oracleCollateral != address(0), "zero");
+        require(_oracleCollateral != address(0), "invalidAddress");
         oracleCollaterals[_index] = _oracleCollateral;
+        emit SetOracleCollateral(_index, _oracleCollateral);
     }
 
     function setRedemptionDelay(uint256 _redemption_delay) external onlyOwner {
         redemption_delay = _redemption_delay;
+        emit SetRedemptionDelay(_redemption_delay);
     }
 
     function setTargetCollateralRatioConfig(uint256 _updateStepTargetCR, uint256 _updateCoolingTimeTargetCR) external onlyOwner {
         updateStepTargetCR = _updateStepTargetCR;
         updateCoolingTimeTargetCR = _updateCoolingTimeTargetCR;
+        emit SetTargetCollateralRatioConfig(_updateStepTargetCR, _updateCoolingTimeTargetCR);
     }
 
     function setTargetDarkOverShareRatioConfig(uint256 _updateStepTargetDODSR, uint256 _updateCoolingTimeTargetDODSR) external onlyOwner {
         updateStepTargetDODSR = _updateStepTargetDODSR;
         updateCoolingTimeTargetDODSR = _updateCoolingTimeTargetDODSR;
+        emit SetTargetDarkOverShareRatioConfig(_updateStepTargetDODSR, _updateCoolingTimeTargetDODSR);
     }
 
     function setTargetCollateralRatio(uint256 _targetCollateralRatio) external onlyTreasuryOrOwner {
@@ -876,6 +894,6 @@ contract Pool is OwnableUpgradeSafe, ReentrancyGuard, IPool {
     /* ========== EMERGENCY ========== */
 
     function rescueStuckErc20(address _token) external onlyOwner {
-        IERC20(_token).transfer(owner(), IERC20(_token).balanceOf(address(this)));
+        IERC20(_token).safeTransfer(owner(), IERC20(_token).balanceOf(address(this)));
     }
 }

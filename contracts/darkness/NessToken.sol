@@ -34,6 +34,9 @@ contract NessToken is ERC20Burnable, Ownable {
 
     bool public liquidityMiningDistributed = false;
 
+    event MarketingFundUpdated(address _marketingFund);
+    event AdvisorFundUpdated(address _advisorFund);
+
     constructor(uint256 _startTime, address _marketingFund, address _advisorFund) public ERC20("Darkness Share", "NESS") {
         _mint(msg.sender, SEEDING_FUND_POOL_ALLOCATION);
 
@@ -57,11 +60,13 @@ contract NessToken is ERC20Burnable, Ownable {
     function setMarketingFund(address _marketingFund) external onlyOwner {
         require(_marketingFund != address(0), "zero");
         marketingFund = _marketingFund;
+        emit MarketingFundUpdated(_marketingFund);
     }
 
     function setAdvisorFund(address _advisorFund) external onlyOwner {
         require(_advisorFund != address(0), "zero");
         advisorFund = _advisorFund;
+        emit AdvisorFundUpdated(_advisorFund);
     }
 
     function unclaimedMarketingFund() public view returns (uint256 _pending) {

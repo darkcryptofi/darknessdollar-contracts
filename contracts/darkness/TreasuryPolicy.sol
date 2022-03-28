@@ -3,11 +3,13 @@
 pragma solidity 0.6.12;
 
 import "@openzeppelin/contracts-ethereum-package/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-ethereum-package/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts-ethereum-package/contracts/access/Ownable.sol";
 
 import "../interfaces/ITreasuryPolicy.sol";
 
 contract TreasuryPolicy is OwnableUpgradeSafe, ITreasuryPolicy {
+    using SafeERC20 for IERC20;
     address public treasury;
 
     // fees
@@ -30,6 +32,7 @@ contract TreasuryPolicy is OwnableUpgradeSafe, ITreasuryPolicy {
     event StrategistStatusUpdated(address indexed account, bool status);
     event MintingFeeUpdated(uint256 fee);
     event RedemptionFeeUpdated(uint256 fee);
+    event ReserveShareStateUpdated(uint256 _reserve_share_state);
 
     /* ========== MODIFIERS ========== */
 
@@ -81,11 +84,12 @@ contract TreasuryPolicy is OwnableUpgradeSafe, ITreasuryPolicy {
 
     function setReserveShareState(uint8 _reserve_share_state) external onlyStrategist {
         reserve_share_state = _reserve_share_state;
+        emit ReserveShareStateUpdated(_reserve_share_state);
     }
 
     /* ========== EMERGENCY ========== */
 
     function rescueStuckErc20(address _token) external onlyOwner {
-        IERC20(_token).transfer(owner(), IERC20(_token).balanceOf(address(this)));
+        IERC20(_token).safeTransfer(owner(), IERC20(_token).balanceOf(address(this)));
     }
 }

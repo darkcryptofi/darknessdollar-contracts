@@ -50,7 +50,16 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
 
     event PoolAdded(address indexed pool);
     event PoolRemoved(address indexed pool);
-    event ProfitExtracted(uint256 amount);
+    event TreasuryPolicyUpdated(address _treasuryPolicy);
+    event OracleDollarUpdated(address _oracleDollar);
+    event OracleDarkUpdated(address _oracleDark);
+    event OracleShareUpdated(address _oracleShare);
+    event OracleCollateralsUpdated(address[] _oracleCollaterals);
+    event OracleCollateralUpdated(uint256 _index, address _oracleCollateral);
+    event CollateralReserveUpdated(address _collateralReserve);
+    event ProfitSharingFundUpdated(address _profitSharingFund);
+    event DarkInsuranceFundUpdated(address _darkInsuranceFund);
+    event UpdateProtocol();
     event StrategistStatusUpdated(address indexed account, bool status);
 
     /* ========== MODIFIERS ========== */
@@ -297,21 +306,25 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
     function setTreasuryPolicy(address _treasuryPolicy) public onlyOwner {
         require(_treasuryPolicy != address(0), "zero");
         treasuryPolicy = _treasuryPolicy;
+        emit TreasuryPolicyUpdated(_treasuryPolicy);
     }
 
     function setOracleDollar(address _oracleDollar) external onlyOwner {
         require(_oracleDollar != address(0), "zero");
         oracleDollar = _oracleDollar;
+        emit OracleDollarUpdated(_oracleDollar);
     }
 
     function setOracleDark(address _oracleDark) external onlyOwner {
         require(_oracleDark != address(0), "zero");
         oracleDark = _oracleDark;
+        emit OracleDarkUpdated(_oracleDark);
     }
 
     function setOracleShare(address _oracleShare) external onlyOwner {
         require(_oracleShare != address(0), "zero");
         oracleShare = _oracleShare;
+        emit OracleShareUpdated(_oracleShare);
     }
 
     function setOracleCollaterals(address[] memory _oracleCollaterals) external onlyOwner {
@@ -320,26 +333,31 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
         for (uint256 i = 0; i < 3; i++) {
             oracleCollaterals.push(_oracleCollaterals[i]);
         }
+        emit OracleCollateralsUpdated(_oracleCollaterals);
     }
 
     function setOracleCollateral(uint256 _index, address _oracleCollateral) external onlyOwner {
         require(_oracleCollateral != address(0), "zero");
         oracleCollaterals[_index] = _oracleCollateral;
+        emit OracleCollateralUpdated(_index, _oracleCollateral);
     }
 
     function setCollateralReserve(address _collateralReserve) public onlyOwner {
         require(_collateralReserve != address(0), "zero");
         collateralReserve_ = _collateralReserve;
+        emit CollateralReserveUpdated(_collateralReserve);
     }
 
     function setProfitSharingFund(address _profitSharingFund) public onlyOwner {
         require(_profitSharingFund != address(0), "zero");
         profitSharingFund_ = _profitSharingFund;
+        emit ProfitSharingFundUpdated(_profitSharingFund);
     }
 
     function setDarkInsuranceFund(address _darkInsuranceFund) public onlyOwner {
         require(_darkInsuranceFund != address(0), "zero");
         darkInsuranceFund_ = _darkInsuranceFund;
+        emit DarkInsuranceFundUpdated(_darkInsuranceFund);
     }
 
     function updateProtocol() external onlyStrategist {
@@ -365,11 +383,12 @@ contract Treasury is ITreasury, OwnableUpgradeSafe, ReentrancyGuard {
         if (_oracle != address(0)) IOracle(_oracle).update();
         _oracle = oracleDollar;
         if (_oracle != address(0)) IOracle(_oracle).update();
+        emit UpdateProtocol();
     }
 
     /* ========== EMERGENCY ========== */
 
     function rescueStuckErc20(address _token) external onlyOwner {
-        IERC20(_token).transfer(owner(), IERC20(_token).balanceOf(address(this)));
+        IERC20(_token).safeTransfer(owner(), IERC20(_token).balanceOf(address(this)));
     }
 }
